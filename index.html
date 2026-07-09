@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CFO Sentinel AI - Auditoria Financeira</title>
+    <script>
+      // Intercept and silence benign WebSocket or Vite connection errors and unhandled rejections
+      (function() {
+        const isBenignError = (err) => {
+          if (!err) return false;
+          const str = String(err.message || err.reason || err).toLowerCase();
+          return str.includes('websocket') || str.includes('vite') || str.includes('ws://') || str.includes('fechado sem ter sido aberto');
+        };
+
+        window.addEventListener('unhandledrejection', function(event) {
+          if (isBenignError(event.reason) || isBenignError(event.reason?.message)) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }, true);
+
+        window.addEventListener('error', function(event) {
+          if (isBenignError(event.error) || isBenignError(event.message)) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }, true);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

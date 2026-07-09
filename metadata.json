@@ -1,0 +1,8 @@
+{
+  "name": "CFO Sentinel AI",
+  "description": "Agente Analista de Dados Financeiros e Especialista em Modelagem Preditiva para diagnóstico de saúde financeira e projeções.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
