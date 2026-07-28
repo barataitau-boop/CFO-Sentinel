@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { saasStore } from "./src/services/saasStore.js";
 
 dotenv.config();
 
@@ -111,6 +112,246 @@ async function startServer() {
 
   // Middleware for parsing JSON and large payloads
   app.use(express.json({ limit: '50mb' }));
+
+  /**
+   * ============================================================================
+   * ETAPA 2: MIDDLEWARES DE AUTENTICAÇÃO E AUTORIZAÇÃO / RBAC
+   * ============================================================================
+   */
+
+  // 1. Middleware de Autenticação (Verificação de token JWT simulado)
+  const requireAuth = (req: any, res: any, next: any) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Acesso negado. Token de autenticação não fornecido." });
+    }
+
+    const token = authHeader.split(" ")[1];
+    try {
+      const session = saasStore.verifyToken(token);
+      
+      // Adiciona a sessão ativa à requisição para isolamento de tenant
+      req.session = session;
+      next();
+    } catch (err: any) {
+      return res.status(401).json({ error: err.message || "Sessão inválida ou expirada." });
+    }
+  };
+
+  // 2. Middleware de Autorização / RBAC (Verificação de permissão e isolamento de tenant)
+  const requirePermission = (permissionCode: string) => {
+    return (req: any, res: any, next: any) => {
+      if (!req.session) {
+        return res.status(401).json({ error: "Usuário não autenticado." });
+      }
+
+      const { permissions, user } = req.session;
+
+      // 1. Validação de isolamento do Tenant
+      // Se o usuário não for SuperAdmin (Master) e estiver tentando acessar rotas que requerem outra empresa
+      if (user.roleId !== "role-master-admin" && req.params.companyId && req.params.companyId !== user.companyId) {
+        return res.status(403).json({ error: "Acesso negado. Tentativa de violação de isolamento de Tenant (IDOR)." });
+      }
+
+      // 2. Validação da Permissão Granular
+      const hasPermission = permissions.includes(permissionCode);
+      if (!hasPermission) {
+        return res.status(403).json({ 
+          error: `Acesso negado. Você não possui privilégios para executar esta ação (${permissionCode}).` 
+        });
+      }
+
+      next();
+    };
+  };
+
+  /**
+   * ============================================================================
+   * CONTROLLERS E ROTAS DO SAAS MULTI-TENANT E RBAC
+   * ============================================================================
+   */
+
+  // Rota de Login (Simulador de Token JWT)
+  app.post("/api/saas/login", (req, res) => {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: "E-mail obrigatório." });
+    }
+
+    try {
+      const session = saasStore.login(email);
+      if (!session) {
+        return res.status(404).json({ error: "Usuário não cadastrado com este e-mail." });
+      }
+      res.json(session);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // Obter detalhes da sessão atual
+  app.get("/api/saas/me", requireAuth, (req: any, res) => {
+    res.json(req.session);
+  });
+
+  // LISTAR EMPRESAS / TENANTS (Apenas Master Super Admin)
+  app.get("/api/saas/companies", requireAuth, requirePermission("companies:read"), (req, res) => {
+    res.json(saasStore.getCompanies());
+  });
+
+  // CRIAR EMPRESA / TENANT (Apenas Master Super Admin)
+  app.post("/api/saas/companies", requireAuth, requirePermission("companies:create"), (req, res) => {
+    const { name, domain, userLimit } = req.body;
+    if (!name || !domain || !userLimit) {
+      return res.status(400).json({ error: "Campos obrigatórios: Nome, Domínio e Limite de Usuários." });
+    }
+
+    try {
+      const company = saasStore.createCompany(name, domain, parseInt(userLimit, 10));
+      res.status(201).json(company);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // ATUALIZAR EMPRESA / TENANT (Apenas Master Super Admin)
+  app.put("/api/saas/companies/:id", requireAuth, requirePermission("companies:edit"), (req, res) => {
+    const { name, domain, userLimit, status } = req.body;
+    try {
+      const updated = saasStore.updateCompany(req.params.id, {
+        ...(name && { name }),
+        ...(domain && { domain }),
+        ...(userLimit && { userLimit: parseInt(userLimit, 10) }),
+        ...(status && { status })
+      });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // DELETAR EMPRESA / TENANT (Apenas Master Super Admin)
+  app.delete("/api/saas/companies/:id", requireAuth, requirePermission("companies:delete"), (req, res) => {
+    try {
+      saasStore.deleteCompany(req.params.id);
+      res.json({ message: "Empresa e todos os seus usuários associados foram removidos com sucesso." });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // LISTAR USUÁRIOS DO TENANT ATIVO
+  app.get("/api/saas/users", requireAuth, requirePermission("users:read"), (req: any, res) => {
+    const tenantCompanyId = req.session.user.companyId;
+    res.json(saasStore.getUsers(tenantCompanyId));
+  });
+
+  // CRIAR USUÁRIO DO TENANT COM VALIDAÇÃO DE LIMITE DE PLANO
+  app.post("/api/saas/users", requireAuth, requirePermission("users:create"), (req: any, res) => {
+    const tenantCompanyId = req.session.user.companyId;
+    const { name, email, roleId } = req.body;
+
+    if (!name || !email || !roleId) {
+      return res.status(400).json({ error: "Campos obrigatórios: Nome, E-mail e Cargo (Role)." });
+    }
+
+    try {
+      // Cria o usuário executando a regra crítica de limite de plano do Tenant
+      const newUser = saasStore.createUser(tenantCompanyId, name, email, roleId);
+      res.status(201).json(newUser);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // EDITAR USUÁRIO DO TENANT ATIVO
+  app.put("/api/saas/users/:id", requireAuth, requirePermission("users:edit"), (req: any, res) => {
+    const tenantCompanyId = req.session.user.companyId;
+    const { name, roleId, status } = req.body;
+
+    if (!name || !roleId || !status) {
+      return res.status(400).json({ error: "Campos obrigatórios: Nome, Cargo e Status." });
+    }
+
+    try {
+      const updated = saasStore.updateUser(tenantCompanyId, req.params.id, name, roleId, status);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // DELETAR USUÁRIO DO TENANT ATIVO
+  app.delete("/api/saas/users/:id", requireAuth, requirePermission("users:delete"), (req: any, res) => {
+    const tenantCompanyId = req.session.user.companyId;
+    try {
+      saasStore.deleteUser(tenantCompanyId, req.params.id);
+      res.json({ message: "Usuário removido com sucesso." });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // LISTAR ROLES DISPONÍVEIS NO TENANT
+  app.get("/api/saas/roles", requireAuth, requirePermission("roles:read"), (req: any, res) => {
+    const tenantCompanyId = req.session.user.companyId;
+    res.json(saasStore.getRoles(tenantCompanyId));
+  });
+
+  // CRIAR ROLE PERSONALIZADA NO TENANT
+  app.post("/api/saas/roles", requireAuth, requirePermission("roles:create"), (req: any, res) => {
+    const tenantCompanyId = req.session.user.companyId;
+    const { name, description, selectedPermissions } = req.body;
+
+    if (!name || !selectedPermissions || !Array.isArray(selectedPermissions)) {
+      return res.status(400).json({ error: "Campos obrigatórios: Nome e Lista de Permissões." });
+    }
+
+    try {
+      const role = saasStore.createRole(tenantCompanyId, name, description || "", selectedPermissions);
+      res.status(201).json(role);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // ATUALIZAR PERMISSÕES DE UMA ROLE PERSONALIZADA
+  app.put("/api/saas/roles/:id", requireAuth, requirePermission("roles:edit"), (req: any, res) => {
+    const tenantCompanyId = req.session.user.companyId;
+    const { selectedPermissions } = req.body;
+
+    if (!selectedPermissions || !Array.isArray(selectedPermissions)) {
+      return res.status(400).json({ error: "Lista de Permissões obrigatória." });
+    }
+
+    try {
+      saasStore.updateRolePermissions(tenantCompanyId, req.params.id, selectedPermissions);
+      res.json({ message: "Permissões atualizadas com sucesso para este perfil." });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // DELETAR ROLE PERSONALIZADA
+  app.delete("/api/saas/roles/:id", requireAuth, requirePermission("roles:delete"), (req: any, res) => {
+    const tenantCompanyId = req.session.user.companyId;
+    try {
+      saasStore.deleteRole(tenantCompanyId, req.params.id);
+      res.json({ message: "Perfil de acesso personalizado deletado." });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // OBTER TODAS AS PERMISSÕES DO SISTEMA
+  app.get("/api/saas/permissions", requireAuth, (req, res) => {
+    res.json(saasStore.getPermissions());
+  });
+
+  // OBTER PERMISSÕES ASSOCIADAS A UMA ROLE ESPECÍFICA
+  app.get("/api/saas/role-permissions/:roleId", requireAuth, (req, res) => {
+    res.json(saasStore.getRolePermissions(req.params.roleId));
+  });
 
   // API routes go here
   app.get("/api/health", (req, res) => {

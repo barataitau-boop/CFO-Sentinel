@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import React from 'react';
 import { 
   FileUp, 
@@ -14,7 +14,13 @@ import {
   Target,
   BarChart3,
   ShieldCheck,
-  Building2
+  Building2,
+  Key,
+  Lock,
+  Users,
+  Fingerprint,
+  Globe,
+  Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -35,6 +41,9 @@ import ScenarioSimulator from './components/ScenarioSimulator';
 import AuditTab from './components/AuditTab';
 import ProjectionsTab from './components/ProjectionsTab';
 import DossierTab from './components/DossierTab';
+import { saasService } from './services/saasService';
+import { SaasSession } from './types/saas';
+import SaasControlPanel from './components/SaasControlPanel';
 
 export default function App() {
   const [report, setReport] = useState<FinancialReport | null>(null);
@@ -43,8 +52,50 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [sectors, setSectors] = useState<{ name: string; percentage: number }[]>([{ name: '', percentage: 100 }]);
   const [attachedFiles, setAttachedFiles] = useState<{ data: string; isPdf: boolean; fileName: string }[]>([]);
-  const [activeTab, setActiveTab] = useState<'overview' | 'projections' | 'audit' | 'dossier'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'projections' | 'audit' | 'dossier' | 'saas'>('overview');
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
+
+  // SaaS Multi-tenant and RBAC Simulation states
+  const [saasSession, setSaasSession] = useState<SaasSession | null>(null);
+  const [saasLoading, setSaasLoading] = useState(false);
+  const [saasError, setSaasError] = useState<string | null>(null);
+
+  // Login as Persona simulator
+  const handleLoginAsPersona = async (email: string) => {
+    setSaasLoading(true);
+    setSaasError(null);
+    try {
+      const session = await saasService.login(email);
+      setSaasSession(session);
+      
+      // If active tab requires finance:read and user loses it, redirect to SaaS tab
+      const hasFinanceRead = session.permissions.includes('finance:read');
+      if (!hasFinanceRead && ['overview', 'projections', 'audit', 'dossier'].includes(activeTab)) {
+        setActiveTab('saas');
+      }
+    } catch (err: any) {
+      console.error(err);
+      setSaasError(err.message || 'Falha na autenticação do Tenant/Usuário.');
+    } finally {
+      setSaasLoading(false);
+    }
+  };
+
+  // Refresh active session details
+  const refreshSaasSession = async () => {
+    if (!saasSession) return;
+    try {
+      const session = await saasService.getMe();
+      setSaasSession(session);
+    } catch (err: any) {
+      console.error("Failed to refresh session", err);
+    }
+  };
+
+  // Automatically log in as Tenant Admin Alice on startup
+  useEffect(() => {
+    handleLoginAsPersona('alice@acme.com');
+  }, []);
 
   const handleFileUpload = async (uploadedFiles: FileList) => {
     setLoading(true);
@@ -109,6 +160,138 @@ export default function App() {
     if (files && files.length > 0) handleFileUpload(files);
   }, []);
 
+  const renderPersonaSwitcher = () => {
+    const personas = [
+      { name: "Alice Smith", email: "alice@acme.com", role: "Tenant Admin (Acme)", company: "Acme Corp", limit: "Limite: 3", color: "text-emerald-400 border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10", tooltip: "Admin da Acme Corp. Permissões completas de gestão de usuários e criação de Cargos (RBAC). Limite de 3 assentos (atingido)." },
+      { name: "Bob Jones", email: "bob@acme.com", role: "Financeiro (Acme)", company: "Acme Corp", limit: "Limite: 3", color: "text-blue-400 border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/10", tooltip: "Analista Financeiro. Possui privilégios de leitura e edição financeira, mas é bloqueado de ver ou modificar equipe e cargos." },
+      { name: "Carlos Santos", email: "carlos@acme.com", role: "Operador (Acme)", company: "Acme Corp", limit: "Limite: 3", color: "text-amber-400 border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10", tooltip: "Usuário Comum. Totalmente bloqueado por RBAC nos relatórios e configurações. Demonstra telas de restrição automática." },
+      { name: "Arthur Pendragon", email: "master@cfosentinel.com", role: "SaaS Super Admin", company: "SaaS Master", limit: "Ilimitado", color: "text-indigo-400 border-indigo-500/30 bg-indigo-500/5 hover:bg-indigo-500/10", tooltip: "Super Administrador Master. Acesso total e global ao SaaS. Cadastra empresas, altera planos e suspende faturas." },
+      { name: "Bill Lumbergh", email: "bill@globex.com", role: "Tenant Admin (Globex)", company: "Globex Ind.", limit: "Limite: 15", color: "text-purple-400 border-purple-500/30 bg-purple-500/5 hover:bg-purple-500/10", tooltip: "Admin da Globex. Limite amplo de 15 usuários. Isolado do tenant Acme Corp (Prevenção total de vazamento de dados)." },
+      { name: "Dave Bowman", email: "dave@blockbuster.com", role: "Admin Suspenso", company: "Blockbuster", limit: "Limite: 5", color: "text-rose-400 border-rose-500/30 bg-rose-500/5 hover:bg-rose-500/10", tooltip: "Empresa suspensa por faturamento. O middleware do backend recusa a autenticação imediatamente com erro 401." }
+    ];
+
+    return (
+      <div className="w-full max-w-5xl bg-slate-900/60 border border-white/10 rounded-2xl p-5 mb-8 z-10 text-left">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+          <div>
+            <h3 className="text-sm font-bold tracking-tight text-white flex items-center gap-1.5">
+              <Fingerprint className="w-4 h-4 text-blue-400" />
+              Simulador SaaS Multi-tenant & Autenticação RBAC
+            </h3>
+            <p className="text-xs text-slate-400">
+              Escolha uma identidade abaixo para ver o isolamento de dados por Tenant e as permissões de acesso em tempo real.
+            </p>
+          </div>
+          {saasLoading && (
+            <span className="text-[10px] font-bold text-blue-400 bg-blue-500/10 px-2 py-1 rounded border border-blue-500/20 flex items-center gap-1.5 self-start">
+              <RefreshCw className="w-3 h-3 animate-spin" /> Autenticando no Servidor...
+            </span>
+          )}
+        </div>
+
+        {/* Personas Row */}
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+          {personas.map((p) => {
+            const isCurrent = saasSession?.user.email === p.email;
+            return (
+              <button
+                key={p.email}
+                title={p.tooltip}
+                onClick={() => handleLoginAsPersona(p.email)}
+                className={cn(
+                  "border p-3 rounded-xl transition text-left relative flex flex-col justify-between h-24 cursor-pointer group",
+                  isCurrent 
+                    ? "border-blue-500 bg-blue-500/10 text-white" 
+                    : p.color
+                )}
+              >
+                <div>
+                  <div className="text-[10px] font-bold truncate">{p.name}</div>
+                  <div className="text-[9px] opacity-75 truncate">{p.role}</div>
+                </div>
+                <div className="mt-2 flex items-center justify-between text-[8px] font-mono">
+                  <span className="truncate opacity-50">{p.company}</span>
+                  <span className="font-bold opacity-80">{p.limit}</span>
+                </div>
+                {isCurrent && (
+                  <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.8)]"></span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Display Current Active Session Details */}
+        {saasSession && (
+          <div className="mt-4 p-3 bg-slate-950/50 border border-white/5 rounded-xl text-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-3 font-mono">
+            <div className="space-y-1">
+              <p className="text-slate-300">
+                👤 Usuário Ativo: <span className="text-blue-400 font-bold">{saasSession.user.name}</span> | Empresa: <span className="text-emerald-400 font-bold">{saasSession.company?.name || "Global SuperAdmin"}</span>
+              </p>
+              <p className="text-[10px] text-slate-500 max-w-3xl leading-relaxed">
+                🔑 Chave do Tenant: <span className="text-indigo-400">{saasSession.user.companyId}</span> | Limite de Assentos: <span className="text-indigo-400">{saasSession.company?.userLimit || "Ilimitado"}</span>
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {saasSession.permissions.slice(0, 5).map(perm => (
+                <span key={perm} className="px-1.5 py-0.5 text-[9px] bg-slate-800 text-slate-400 border border-white/5 rounded">
+                  {perm}
+                </span>
+              ))}
+              {saasSession.permissions.length > 5 && (
+                <span className="px-1.5 py-0.5 text-[9px] bg-slate-800 text-slate-400 border border-white/5 rounded">
+                  +{saasSession.permissions.length - 5}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Simulated Authentication Rejections */}
+        {saasError && (
+          <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-xs flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 shrink-0 text-red-400" />
+            <div>
+              <span className="font-bold">Bloqueio de Login no Back-end:</span> {saasError}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderAccessDenied = (permission: string) => {
+    return (
+      <div className="bg-slate-900/40 border border-red-500/20 rounded-2xl p-8 text-center max-w-2xl mx-auto my-12 backdrop-blur-md">
+        <div className="inline-flex items-center justify-center p-4 bg-red-500/10 rounded-full mb-6 border border-red-500/20">
+          <Lock className="w-8 h-8 text-red-400 animate-pulse" />
+        </div>
+        <h3 className="text-xl font-bold text-white mb-2 uppercase tracking-wide">Acesso Bloqueado por RBAC</h3>
+        <p className="text-slate-400 text-sm mb-6 leading-relaxed">
+          O seu cargo atual (<span className="text-blue-400 font-semibold">{saasSession?.user.roleName || "Nível Comum"}</span>) não possui o privilégio necessário <code className="text-red-400 bg-red-500/5 px-2 py-0.5 rounded border border-red-500/10 font-mono">{permission}</code> para visualizar estes relatórios estratégicos de CFO.
+        </p>
+        <div className="p-4 bg-slate-950/50 rounded-xl text-xs text-left text-slate-500 space-y-2 mb-6 border border-white/5 font-mono">
+          <p className="text-slate-300 font-bold">🛡️ Validação de IDOR & RBAC (Back-end):</p>
+          <p>O servidor barrou esta requisição de API com status <span className="text-red-400 font-bold">403 Forbidden</span>. O token JWT decodificado não continha a permissão correspondente na matriz RBAC para o Tenant ID <span className="text-indigo-400">{saasSession?.user.companyId || "indefinido"}</span>.</p>
+        </div>
+        <div className="flex flex-col sm:flex-row justify-center gap-3">
+          <button
+            onClick={() => handleLoginAsPersona('alice@acme.com')}
+            className="px-5 py-2.5 bg-blue-600 text-white font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-blue-500 transition cursor-pointer"
+          >
+            Mudar para Alice (Tenant Admin)
+          </button>
+          <button
+            onClick={() => setActiveTab('saas')}
+            className="px-5 py-2.5 bg-slate-800 text-slate-300 font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-slate-700 transition cursor-pointer"
+          >
+            Ver Detalhes do Cargo
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   if (!report) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-slate-950 relative overflow-y-auto">
@@ -116,6 +299,9 @@ export default function App() {
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-blue-600/20 rounded-full blur-[120px]"></div>
         <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-emerald-600/10 rounded-full blur-[150px]"></div>
         <div className="absolute top-[20%] right-[10%] w-[30%] h-[30%] bg-purple-600/10 rounded-full blur-[100px]"></div>
+
+        {/* SaaS Identity Switcher */}
+        {renderPersonaSwitcher()}
 
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
@@ -406,6 +592,15 @@ export default function App() {
             <FileText className="w-4 h-4" /> Dossiê PDF
           </button>
           <button 
+            onClick={() => setActiveTab('saas')}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-3 text-xs font-bold uppercase tracking-wider rounded-xl transition-all text-indigo-400 border border-indigo-500/20 bg-indigo-500/5 hover:bg-indigo-500/15",
+              activeTab === 'saas' ? 'sidebar-item-active !text-white !bg-indigo-600/20' : 'sidebar-item'
+            )}
+          >
+            <Settings className="w-4 h-4" /> Painel SaaS (RBAC)
+          </button>
+          <button 
             onClick={downloadTemplate}
             className="sidebar-item w-full flex items-center gap-3 px-4 py-3 text-xs font-bold uppercase tracking-wider rounded-xl transition-all border border-transparent hover:border-white/5"
           >
@@ -498,11 +693,28 @@ export default function App() {
           >
             Dossiê PDF
           </button>
+          <button 
+            onClick={() => setActiveTab('saas')}
+            className={cn(
+              "flex-1 py-3 px-4 text-[10px] font-black uppercase tracking-widest text-center border-b-2 transition-all min-w-[100px]",
+              activeTab === 'saas' ? 'border-indigo-500 text-indigo-400 bg-white/5' : 'border-transparent text-slate-400'
+            )}
+          >
+            SaaS (RBAC)
+          </button>
         </div>
 
         <div className="p-8 space-y-8 max-w-[1500px] mx-auto no-print">
-          {activeTab === 'overview' && (
+          {renderPersonaSwitcher()}
+
+          {activeTab === 'saas' ? (
+            <SaasControlPanel session={saasSession!} onRefreshSession={refreshSaasSession} />
+          ) : !(saasSession?.permissions.includes('finance:read') ?? true) ? (
+            renderAccessDenied('finance:read')
+          ) : (
             <>
+              {activeTab === 'overview' && (
+                <>
               {/* Summary Stats */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 {report.kpis.map((kpi, idx) => (
@@ -758,25 +970,27 @@ export default function App() {
                 </div>
               </footer>
               
-              <div className="mt-12 p-8 glass-card border-white/5 opacity-80">
-                <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-4">Nota de Diagnóstico</h3>
-                <p className="text-slate-400 text-sm leading-relaxed font-medium">
-                  {report.summary}
-                </p>
-              </div>
+                  <div className="mt-12 p-8 glass-card border-white/5 opacity-80">
+                    <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-4">Nota de Diagnóstico</h3>
+                    <p className="text-slate-400 text-sm leading-relaxed font-medium">
+                      {report.summary}
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {activeTab === 'projections' && (
+                <ProjectionsTab report={report} />
+              )}
+
+              {activeTab === 'audit' && (
+                <AuditTab report={report} />
+              )}
+
+              {activeTab === 'dossier' && (
+                <DossierTab report={report} />
+              )}
             </>
-          )}
-
-          {activeTab === 'projections' && (
-            <ProjectionsTab report={report} />
-          )}
-
-          {activeTab === 'audit' && (
-            <AuditTab report={report} />
-          )}
-
-          {activeTab === 'dossier' && (
-            <DossierTab report={report} />
           )}
         </div>
       </main>
