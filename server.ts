@@ -1,11 +1,19 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { saasStore } from "./src/services/saasStore.js";
+if (process.env.NODE_ENV !== "production") {
+    const { createServer } = await import("vite");
 
+    const vite = await createServer({
+        server: { middlewareMode: true },
+        appType: "spa"
+    });
+
+    app.use(vite.middlewares);
+}
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
